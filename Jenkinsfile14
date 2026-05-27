@@ -1,0 +1,82 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Clone codebase') {
+            steps {
+                echo 'Cloning from GitHub'
+                git (url: 'https://github.com/T4zt00n51/maven-project.git' , branch: 'master' , credentialsId: 'credForGithub')
+            }
+        }
+        stage('Compile & unitTests') {
+            steps {
+                echo 'Compile and unit testing'
+                withMaven(maven:'localMaven'){
+                    sh 'mvn clean test'
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+                echo 'Building or packaging'
+                 withMaven(maven:'localMaven'){
+                    sh 'mvn clean -B -DskipTests package'
+                 }
+            }
+        }
+        stage('Qualimetry analysis avec SonarQube') {
+            steps {
+                echo 'Qualimitry analysis by SonarQube'
+                withSonarQubeEnv(installationName:'sonarServer' , credentialsId:'cred4sonar'){
+                    sh '''
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=maven-project \
+                            -Dsonar.projectName="Maven-Project-Pipeline-Analysis" \
+                            -Dsonar.projectVersion=1.0-SNAPSHOT \
+                            -Dsonar.java.source=11 \
+                            -U
+                    '''
+                }
+            }
+        }
+        stage('Code Source Qualimetry Analysis') {
+            steps {
+                echo 'Code Source Qualimetry Analysis with Warnings & JaCoCo'
+                // Checkstyle — inchangé
+                sh 'mvn checkstyle:checkstyle'
+                // FIX : cobertura:cobertura → jacoco:report
+                // JaCoCo nécessite que les tests aient été exécutés au préalable
+                // avec l'agent jacoco actif (prepare-agent dans pom.xml)
+                // Si les tests ne sont pas encore lancés dans un stage précédent :
+                sh 'mvn test jacoco:report'
+                // Si les tests sont déjà lancés dans un stage précédent :
+                // sh 'mvn jacoco:report'
+            }
+            post {
+                always {
+                // FIX : cobertura() → jacoco() DSL natif
+                jacoco(
+                    execPattern    : '**/target/jacoco.exec',
+                    classPattern   : '**/target/classes',
+                    sourcePattern  : '**/src/main/java',
+                    exclusionPattern: '**/src/test/**'
+                )
+                // Warnings NG — inchangé
+                recordIssues(
+                    tools: [checkStyle(pattern: '**/target/checkstyle-result.xml')],
+                    enabledForFailure: true
+                )
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                echo 'Deploying in staging/Prod environment'
+                deploy(
+                    adapters: [ tomcat9(url: 'http://192.168.56.13:8080', credentialsId: 'adminTomcat')],
+                    war: '**/*.war'
+                )
+            }
+        }
+    }
+}
